@@ -20,10 +20,13 @@ const load = async (webgpu) => {
 
 export const useModel = () => {
     return {
-        run: async (webgpu) => {
+        run: async (webgpu, optimized) => {
             const { InferenceSession, Tensor } = await load(webgpu);
 
-            const model_binary = await fetch("htdemucs.onnx");
+            const model = optimized ? "htdemucs_optimized.onnx" : "htdemucs.onnx";
+            console.log("Using model: ", model);
+
+            const model_binary = await fetch(model);
             const model_uint8 = new Uint8Array(
                 await model_binary.arrayBuffer()
             );
@@ -68,7 +71,7 @@ export const useModel = () => {
 
             for (let idx = 0; idx < inputs.length; idx++) {
                 console.time(`step onnx ${idx}`);
-                const output = await session.run(inputs[idx], {});
+                const output = await session.run(inputs[idx], {}); // error here
                 console.timeEnd(`step onnx ${idx}`);
             }
 

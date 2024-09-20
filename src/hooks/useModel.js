@@ -21,9 +21,9 @@ const load = async (webgpu) => {
 export const useModel = () => {
     return {
         run: async (webgpu, optimized) => {
-            const { InferenceSession, Tensor } = await load(webgpu);
+            const { InferenceSession, Tensor, env } = await load(webgpu);
 
-            const model = optimized ? "htdemucs_optimized.onnx" : "htdemucs.onnx";
+            const model = optimized ? "htdemucs_optimized.onnx" : "demucs.onnx";
             console.log("Using model: ", model);
 
             const model_binary = await fetch(model);
@@ -31,15 +31,25 @@ export const useModel = () => {
                 await model_binary.arrayBuffer()
             );
 
+            console.time("onnx");
+
             const session = await InferenceSession.create(model_uint8, {
                 executionProviders: webgpu ? ["webgpu"] : undefined,
                 enableProfiling: false,
             });
 
+            let wgpu_profile = "[\n";
+            env.webgpu.profiling = {
+                mode: "default",
+                ondata: (data) => {
+                    wgpu_profile += JSON.stringify(data) + ",\n";
+                },
+            };
+
             // simulating 5 audio chunks with their corresponding spectrograms
             let audioChunks = [];
             let specs = [];
-            for (let i = 0; i < 5; i++) {
+            for (let i = 0; i < 6; i++) {
                 // push both mix and spec
                 audioChunks.push(new Float32Array(1 * 2 * 441000));
                 specs.push(new Float32Array(1 * 2 * 2048 * 431 * 2));
@@ -74,6 +84,49 @@ export const useModel = () => {
                 const output = await session.run(inputs[idx], {}); // error here
                 console.timeEnd(`step onnx ${idx}`);
             }
+
+            session.endProfiling();
+
+            wgpu_profile = wgpu_profile.slice(0, -2) + "\n]";
+            const profileWgpu = JSON.parse(
+                wgpu_profile
+            );
+
+            const output = profileWgpu.map((x) => {
+                const time = x.endTime - x.startTime;
+                const inputs = x.inputsMetadata.map((y) => y.dims);
+                const outputs = x.outputsMetadata.map((y) => y.dims);
+                const name = x.kernelName;
+                const type = x.kernelType;
+
+                //time is in microseconds, converto to milliseconds
+                return { time: time / 1000, inputs, outputs, name, type };
+            });
+
+            const kernelMap = new Map();
+
+            output.forEach((x) => {
+                if (!kernelMap.has(x.type)) {
+                    kernelMap.set(x.type, []);
+                }
+                kernelMap.get(x.type).push(x);
+            });
+
+            const kernelStats = Array.from(kernelMap.entries()).map(
+                ([name, data]) => {
+                    const total = data.reduce((acc, x) => acc + x.time, 0);
+                    const count = data.length;
+                    const avg = total / count;
+
+                    return { name, total, count, avg };
+                }
+            );
+
+            const sortedKernelStats = kernelStats.sort((a, b) => b.avg - a.avg);
+
+            console.log(
+                JSON.stringify(sortedKernelStats.slice(0, 10), null, 2)
+            );
 
             await session.release();
 
